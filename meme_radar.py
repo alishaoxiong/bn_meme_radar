@@ -11,12 +11,12 @@ import os
 import sys
 import time
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import Any, Optional
 from urllib.request import Request, urlopen
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from binance_mcp import (
+from binance_mcp import (  # noqa: E402
     BinanceMCPClient,
     DEFAULT_BINANCE_MCP_URL,
     render_tool_result,
@@ -34,7 +34,7 @@ class HotToken:
     name: str
     address: str
     pair_url: str
-    price_usd: float | None
+    price_usd: Optional[float]
     liquidity_usd: float
     volume_24h_usd: float
     buys_24h: int
@@ -45,6 +45,16 @@ class HotToken:
     risk_flags: list[str]
     source: str
     observed_at: int
+
+
+@dataclass
+class AgentRecommendation:
+    primary_chain: str
+    primary_symbol: str
+    thesis: str
+    why_now: list[str]
+    watchouts: list[str]
+    next_actions: list[str]
 
 
 def get_json(url: str, timeout: int = 15) -> Any:
@@ -67,15 +77,15 @@ def risk_flags(pair: dict[str, Any], liquidity: float, volume: float) -> list[st
     buys, sells = int(h24.get("buys") or 0), int(h24.get("sells") or 0)
 
     if liquidity < 25_000:
-        flags.append("低流动性")
+        flags.append("low-liquidity")
     if buys + sells and sells > buys * 2:
-        flags.append("卖压偏高")
+        flags.append("sell-pressure-high")
     if volume > 0 and liquidity > 0 and volume / liquidity > 20:
-        flags.append("成交/流动性异常")
+        flags.append("volume/liquidity-anomaly")
 
     info = pair.get("info") or {}
     if not info.get("websites") and not info.get("socials"):
-        flags.append("缺少公开资料")
+        flags.append("missing-public-info")
 
     return flags
 
@@ -165,6 +175,94 @@ def fetch(chains: set[str]) -> list[HotToken]:
     return sorted(result, key=lambda x: x.score, reverse=True)
 
 
+def row_value(row: Any, key: str, default: Any = None) -> Any:
+    if isinstance(row, dict):
+        return row.get(key, default)
+    return getattr(row, key, default)
+
+
+def build_recommendation(rows: list[Any]) -> AgentRecommendation:
+    if not rows:
+        return AgentRecommendation(
+            primary_chain="unknown",
+            primary_symbol="none",
+            thesis="No ranked tokens were available from the current data source.",
+            why_now=["The feed returned no usable pairs."],
+            watchouts=["Try again later or switch to a different chain set."],
+            next_actions=["Re-run the scan after the source refreshes."],
+        )
+
+    top = rows[0]
+    backup = rows[1] if len(rows) > 1 else None
+    top_symbol = str(row_value(top, "symbol", "unknown"))
+    top_chain = str(row_value(top, "chain", "unknown"))
+    top_score = float(row_value(top, "score", 0.0))
+    top_change = float(row_value(top, "price_change_24h_pct", 0.0))
+    thesis = (
+        f"{top_symbol} on {top_chain} is the current watchlist leader because it combines "
+        f"score {top_score:.2f} with {top_change:.2f}% 24h change."
+    )
+    if backup:
+        thesis += f" {row_value(backup, 'symbol', 'backup')} is the backup candidate if the leader loses momentum."
+
+    why_now = [
+        f"Lead token: {top_symbol} on {top_chain} with score {top_score:.2f}.",
+        f"24h move: {top_change:.2f}%, volume ${float(row_value(top, 'volume_24h_usd', 0.0)):,.0f}.",
+        f"Liquidity: ${float(row_value(top, 'liquidity_usd', 0.0)):,.0f}, boosts: {float(row_value(top, 'boosts', 0.0)):.2f}.",
+    ]
+    if backup:
+        why_now.append(
+            f"Secondary watch: {row_value(backup, 'symbol', 'backup')} on {row_value(backup, 'chain', 'unknown')} "
+            f"at score {float(row_value(backup, 'score', 0.0)):.2f}."
+        )
+
+    watchouts = list(row_value(top, "risk_flags", []) or ["No immediate red flags from the current heuristic."])
+    watchouts.append("This is a read-only radar and not a trading signal.")
+
+    next_actions = [
+        f"Watch {top_symbol} for confirmation on the next refresh.",
+        "Open the pair page before any human decision.",
+        "If Binance MCP is connected later, enrich this watchlist with live account context.",
+    ]
+
+    return AgentRecommendation(
+        primary_chain=top_chain,
+        primary_symbol=top_symbol,
+        thesis=thesis,
+        why_now=why_now,
+        watchouts=watchouts,
+        next_actions=next_actions,
+    )
+
+
+def render_agent_report(rows: list[HotToken]) -> None:
+    recommendation = build_recommendation(rows)
+    print("=== Observe ===")
+    print(f"Scanned {len(rows)} candidate tokens across the configured chains.")
+    print(f"Primary watchlist: {recommendation.primary_symbol} [{recommendation.primary_chain}]")
+    print()
+    print("=== Reason ===")
+    print(recommendation.thesis)
+    for item in recommendation.why_now:
+        print(f"- {item}")
+    print()
+    print("=== Risk ===")
+    for item in recommendation.watchouts:
+        print(f"- {item}")
+    print()
+    print("=== Next Action ===")
+    for item in recommendation.next_actions:
+        print(f"- {item}")
+    print()
+    print("=== Ranked List ===")
+    for i, row in enumerate(rows[:10], 1):
+        flags = ", ".join(row_value(row, "risk_flags", []) or []) or "no obvious risk flags"
+        print(
+            f"{i:02d}. [{row_value(row, 'chain', 'unknown')}] {row_value(row, 'symbol', '?')} | "
+            f"score {float(row_value(row, 'score', 0.0)):.2f} | 24h {float(row_value(row, 'price_change_24h_pct', 0.0)):.2f}% | risk: {flags}"
+        )
+
+
 async def mcp_probe(url: str) -> None:
     async with BinanceMCPClient(url) as client:
         print(json.dumps(await client.probe(), ensure_ascii=False, indent=2))
@@ -233,11 +331,19 @@ async def mcp_account(url: str) -> None:
         print(summarize_tool_call(tool, args, result))
 
 
+def run_mcp_task(coro: Any) -> None:
+    try:
+        asyncio.run(coro)
+    except RuntimeError as exc:
+        print(f"error: {exc}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Read-only BSC/Solana/Robinhood meme hotspot radar")
     parser.add_argument("--chains", default="bsc,solana,robinhood")
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--agent", action="store_true", help="Render an agent-style observe/reason/report cycle.")
     parser.add_argument("--mcp-url", default=os.getenv("BINANCE_MCP_URL", DEFAULT_BINANCE_MCP_URL))
     parser.add_argument("--mcp-probe", action="store_true", help="Verify the Binance MCP connection and print tool metadata.")
     parser.add_argument("--mcp-list-tools", action="store_true", help="List tools exposed by the Binance MCP server.")
@@ -255,39 +361,39 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.mcp_probe:
-        asyncio.run(mcp_probe(args.mcp_url))
+        run_mcp_task(mcp_probe(args.mcp_url))
         return
 
     if args.mcp_list_tools:
-        asyncio.run(mcp_list_tools(args.mcp_url))
+        run_mcp_task(mcp_list_tools(args.mcp_url))
         return
 
     if args.mcp_discover:
-        asyncio.run(mcp_discover(args.mcp_url, args.mcp_discover))
+        run_mcp_task(mcp_discover(args.mcp_url, args.mcp_discover))
         return
 
     if args.mcp_market:
-        asyncio.run(mcp_market(args.mcp_url, args.mcp_market, args.mcp_interval, args.mcp_limit))
+        run_mcp_task(mcp_market(args.mcp_url, args.mcp_market, args.mcp_interval, args.mcp_limit))
         return
 
     if args.mcp_symbol_detail:
-        asyncio.run(mcp_symbol_detail(args.mcp_url, args.mcp_symbol_detail))
+        run_mcp_task(mcp_symbol_detail(args.mcp_url, args.mcp_symbol_detail))
         return
 
     if args.mcp_kline:
-        asyncio.run(mcp_kline(args.mcp_url, args.mcp_kline, args.mcp_interval, args.mcp_limit))
+        run_mcp_task(mcp_kline(args.mcp_url, args.mcp_kline, args.mcp_interval, args.mcp_limit))
         return
 
     if args.mcp_account:
-        asyncio.run(mcp_account(args.mcp_url))
+        run_mcp_task(mcp_account(args.mcp_url))
         return
 
     if args.mcp_discover_price:
-        asyncio.run(mcp_discover_price(args.mcp_url, args.mcp_fiat_currency))
+        run_mcp_task(mcp_discover_price(args.mcp_url, args.mcp_fiat_currency))
         return
 
     if args.mcp_call:
-        asyncio.run(mcp_call(args.mcp_url, args.mcp_call, args.mcp_args))
+        run_mcp_task(mcp_call(args.mcp_url, args.mcp_call, args.mcp_args))
         return
 
     chains = {x.strip().lower() for x in args.chains.split(",") if x.strip() in SUPPORTED}
@@ -295,21 +401,25 @@ def main() -> None:
     try:
         rows = [asdict(x) for x in fetch(chains)[: max(1, args.limit)]]
     except Exception as exc:
-        rows = [{"error": str(exc), "hint": "数据源暂时不可用；请稍后重试。"}]
+        rows = [{"error": str(exc), "hint": "data source temporarily unavailable; try again later."}]
 
     if args.json:
         print(json.dumps(rows, ensure_ascii=False, indent=2))
         return
 
+    if args.agent:
+        render_agent_report(rows)
+        return
+
     for i, row in enumerate(rows, 1):
         if "error" in row:
-            print(f"错误: {row['error']}")
+            print(f"error: {row['error']}")
             continue
 
-        flags = ", ".join(row["risk_flags"]) or "未发现基础风险标签"
+        flags = ", ".join(row["risk_flags"]) or "no obvious risk flags"
         print(
             f"{i:02d}. [{row['chain']}] {row['symbol']} | "
-            f"score {row['score']:.2f} | 24h {row['price_change_24h_pct']:.2f}% | 风险: {flags}"
+            f"score {row['score']:.2f} | 24h {row['price_change_24h_pct']:.2f}% | risk: {flags}"
         )
 
 

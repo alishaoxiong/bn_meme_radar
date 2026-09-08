@@ -1,40 +1,74 @@
 # Meme Radar Agent
 
-一个只读的多链 Meme 热点雷达 MVP，已经加上 Binance MCP 的自动发现和业务调用入口。
+`bn_meme_radar` is a read-only multi-chain meme radar with optional Binance MCP access.
 
-## 能做什么
+It is structured to fit both contest activities:
 
-- 抓取 BSC、Solana、Robinhood Chain 的公开 DEX 热点数据。
-- 以成交量、流动性、价格动量、买卖流和公开资料生成透明分数。
-- 输出热点榜单和基础风险标签。
-- 通过官方 Binance MCP endpoint 验证连接、列出工具、自动发现、调用行情和账户类工具。
-- 全程不连接私钥，不签名，不下单。
+- Track A: an Agent OS-style utility that discovers, reasons about, and scores meme tokens across multiple chains.
+- Track B: a Binance MCP client wrapper that can probe tools, inspect market data, and call MCP tools directly.
 
-## 快速运行
+## What it does
 
-```powershell
-python meme_radar.py --chains bsc,solana --limit 10
-python meme_radar.py --json > hotspots.json
-```
+- Scans BSC, Solana, and optional Robinhood Chain token feeds.
+- Scores tokens using liquidity, volume, price change, buy/sell flow, and public-info signals.
+- Prints a ranked hotspot list with simple risk flags.
+- Includes an `--agent` mode that renders an observe/reason/risk/next-action cycle for demos.
+- Connects to the official Binance MCP endpoint and can list or call exposed tools.
+- Keeps the default mode read-only: no private keys, no signing, no automatic order placement.
 
-## Binance MCP 接入
-
-官方 MCP endpoint：
-
-`https://agent.binance.com/mcp/agentic`
-
-先安装依赖：
+## Quick Start
 
 ```powershell
 pip install -r requirements.txt
+python meme_radar.py --chains bsc,solana --limit 10
+python meme_radar.py --json
 ```
 
-然后验证连接：
+## Track A Demo
+
+Use the agent output as the Agent OS demo:
+
+```powershell
+python meme_radar.py --agent --chains bsc,solana,robinhood --limit 20
+python meme_radar.py --json > hotspots.json
+```
+
+This gives you a concrete GitHub project plus a visible agent-style workflow.
+
+## Recording Commands
+
+Use these commands during a demo or verification run:
+
+```powershell
+python meme_radar.py --agent --chains bsc,solana --limit 5
+python meme_radar.py --chains bsc,solana --limit 10
+codex mcp list
+codex mcp get binance
+codex mcp login binance
+python meme_radar.py --mcp-probe
+python meme_radar.py --mcp-list-tools
+python meme_radar.py --mcp-account
+```
+
+If you need to re-authorize Binance MCP, run:
+
+```powershell
+codex mcp logout binance
+codex mcp login binance
+```
+
+## Track B Demo
+
+Official Binance MCP endpoint:
+
+`https://agent.binance.com/mcp/agentic`
+
+Useful verification commands:
 
 ```powershell
 python meme_radar.py --mcp-probe
 python meme_radar.py --mcp-list-tools
-python meme_radar.py --mcp-discover ticker price balance
+python meme_radar.py --mcp-discover ticker price balance trade order buy sell
 python meme_radar.py --mcp-symbol-detail BTCUSDT
 python meme_radar.py --mcp-kline BTCUSDT
 python meme_radar.py --mcp-market BTCUSDT
@@ -43,10 +77,14 @@ python meme_radar.py --mcp-account
 python meme_radar.py --mcp-call <tool_name> --mcp-args "{}"
 ```
 
-如果你的 Agent 环境已经配置了 `BINANCE_MCP_URL`，也可以直接省略 `--mcp-url`。
+If your environment already sets `BINANCE_MCP_URL`, you can omit `--mcp-url`.
 
-## 说明
+## Repo Link
 
-- 这个仓库默认还是只读分析模式。
-- Binance MCP 的具体工具名会随账号权限和产品能力变化，所以我把入口做成了官方工具优先调用，再回退自动匹配。
-- 如果 MCP 未安装，原始雷达命令仍然可以运行。
+GitHub: [https://github.com/alishaoxiong/bn_meme_radar](https://github.com/alishaoxiong/bn_meme_radar)
+
+## Submission Note
+
+If you want a short message to post with the repo, use:
+
+> I am submitting `bn_meme_radar` for both contest activities: Track A for the multi-chain meme radar agent, and Track B for Binance MCP integration and tool calls.

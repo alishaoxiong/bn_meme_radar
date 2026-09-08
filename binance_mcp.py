@@ -10,33 +10,35 @@ from __future__ import annotations
 import json
 import os
 import time
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, suppress
 from dataclasses import asdict, dataclass
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Optional, Sequence
 
 DEFAULT_BINANCE_MCP_URL = "https://agent.binance.com/mcp/agentic"
 
 try:
     from mcp import ClientSession
     from mcp.client.streamable_http import streamable_http_client
+    from mcp.shared.exceptions import MCPError
 except ImportError:  # pragma: no cover - optional dependency
     ClientSession = None
     streamable_http_client = None
+    MCPError = None
 
 
 @dataclass
 class McpTool:
     name: str
-    description: str | None = None
-    title: str | None = None
-    input_schema: dict[str, Any] | None = None
+    description: Optional[str] = None
+    title: Optional[str] = None
+    input_schema: Optional[dict[str, Any]] = None
 
 
 class BinanceMCPClient:
-    def __init__(self, url: str | None = None) -> None:
+    def __init__(self, url: Optional[str] = None) -> None:
         self.url = url or os.getenv("BINANCE_MCP_URL", DEFAULT_BINANCE_MCP_URL)
         self._stack = AsyncExitStack()
-        self.session: ClientSession | None = None
+        self.session: Optional[ClientSession] = None
 
     async def __aenter__(self) -> "BinanceMCPClient":
         if ClientSession is None or streamable_http_client is None:
@@ -50,7 +52,19 @@ class BinanceMCPClient:
         self.session = await self._stack.enter_async_context(
             ClientSession(read_stream, write_stream)
         )
-        await self.session.initialize()
+        try:
+            await self.session.initialize()
+        except Exception as exc:
+            with suppress(Exception):
+                await self._stack.aclose()
+            if MCPError is not None and isinstance(exc, MCPError):
+                raise RuntimeError(
+                    "Binance MCP returned an error during initialization. "
+                    "This usually means the endpoint still needs browser authorization "
+                    "or the Agentic sub-account has not been connected yet. "
+                    "Open the endpoint in a supported agent and complete the Binance auth flow."
+                ) from exc
+            raise RuntimeError(f"Failed to initialize Binance MCP session: {exc}") from exc
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
@@ -89,7 +103,7 @@ class BinanceMCPClient:
         return [item[-1] for item in scored]
 
     @staticmethod
-    def pick_exact_tool(tools: Sequence[McpTool], name: str) -> McpTool | None:
+    def pick_exact_tool(tools: Sequence[McpTool], name: str) -> Optional[McpTool]:
         target = name.strip().lower()
         for tool in tools:
             if tool.name.strip().lower() == target:
@@ -123,10 +137,10 @@ class BinanceMCPClient:
         self,
         tool: McpTool,
         *,
-        symbol: str | None = None,
-        interval: str | None = None,
-        limit: int | None = None,
-        extra: dict[str, Any] | None = None,
+        symbol: Optional[str] = None,
+        interval: Optional[str] = None,
+        limit: Optional[int] = None,
+        extra: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         schema = tool.input_schema or {}
         props = schema.get("properties") or {}
@@ -180,11 +194,11 @@ class BinanceMCPClient:
         self,
         tool_name: str,
         *,
-        symbol: str | None = None,
-        interval: str | None = None,
-        limit: int | None = None,
-        fiat_currency: str | None = None,
-        extra: dict[str, Any] | None = None,
+        symbol: Optional[str] = None,
+        interval: Optional[str] = None,
+        limit: Optional[int] = None,
+        fiat_currency: Optional[str] = None,
+        extra: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         lowered = tool_name.lower()
         args = dict(extra or {})
@@ -209,7 +223,7 @@ class BinanceMCPClient:
 
         return args
 
-    async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> Any:
+    async def call_tool(self, name: str, arguments: Optional[dict[str, Any]] = None) -> Any:
         if self.session is None:
             raise RuntimeError("MCP session is not initialized.")
 
@@ -220,11 +234,11 @@ class BinanceMCPClient:
         preferred_names: Sequence[str],
         keywords: Sequence[str],
         *,
-        symbol: str | None = None,
-        interval: str | None = None,
-        limit: int | None = None,
-        fiat_currency: str | None = None,
-        extra: dict[str, Any] | None = None,
+        symbol: Optional[str] = None,
+        interval: Optional[str] = None,
+        limit: Optional[int] = None,
+        fiat_currency: Optional[str] = None,
+        extra: Optional[dict[str, Any]] = None,
     ) -> tuple[McpTool, dict[str, Any], Any]:
         tools = await self.list_tools()
 
@@ -265,10 +279,10 @@ class BinanceMCPClient:
         self,
         keywords: Sequence[str],
         *,
-        symbol: str | None = None,
-        interval: str | None = None,
-        limit: int | None = None,
-        extra: dict[str, Any] | None = None,
+        symbol: Optional[str] = None,
+        interval: Optional[str] = None,
+        limit: Optional[int] = None,
+        extra: Optional[dict[str, Any]] = None,
     ) -> tuple[McpTool, dict[str, Any], Any]:
         tools = await self.list_tools()
         matches = self.search_tools(tools, keywords)
