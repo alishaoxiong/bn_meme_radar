@@ -1,4 +1,10 @@
 __pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+.tools/
+.DS_Store
 *.pyc
-.env
-hotspots.json
